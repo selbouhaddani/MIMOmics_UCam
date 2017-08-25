@@ -1,0 +1,351 @@
+---
+title: "Analysis of Genetic and Glycan variation with OmicsPLS"
+output:
+  pdf_document:
+    keep_tex: yes
+    toc: yes
+  html_notebook:
+    theme: spacelab
+    toc: yes
+---
+
+```{r setup, include=F}
+knitr::opts_chunk$set(tidy=TRUE, fig.width=14, fig.height=10, 
+               warning=FALSE, message=FALSE, out.width='100%', 
+               size='scriptsize')
+```
+
+
+# The datasets
+
+## Load packages
+
+We will need functions from the following packages. To find out whether a package is already installed you can use the `%in%` operator.
+
+```{r Library}
+# Try e.g.
+"profvis" %in% installed.packages()
+
+library(profvis)
+library(magrittr)
+library(org.Hs.eg.db)
+library(OmicsPLS);
+library(ggplot2);
+library(preprocessCore);
+library(gplots)
+library(gridExtra); 
+library(stringr)
+library(tidyverse)
+library(glycanr)
+```
+
+## Read in datasets
+
+Start by reading in the genetic Principal Components and the IgG glycan datasets from Korcula. Explore the data by using `dim`, `names` and `head`. The genetic PC's dataset contains participants of both Korcula and Vis. 
+
+```{r Glycan data}
+load('GeneData.RData')
+Dat_Kor <- read.delim("Korcula_LCMS_20150220.txt")
+
+dim(GeneData)
+dim(Dat_Kor)
+
+colnames(GeneData)[1:20]
+names(Dat_Kor)
+
+head(Dat_Kor)
+
+```
+
+## Normalization and batch correction
+
+Data that are measured in batches, such as the IgG data, typically contain batch effects. To remove these effects use the function defined below as `empirical_bayes_bc`. As the theory works best with normally distributed variables apply a log transform on the glycans. Set the zero's to `NA`. Select from the glycan data only the covariates and IgG1 glycans.
+Then match the participant ID's (rows) in both datasets.
+Finally remove age and sex trends by regressing these out and consider the IgG1 glycan residuals.
+
+```{r COMBAT and merging}
+empirical_bayes_BC = function(f_data,name_of_batch_variable="batch") {
+  glycans = grep("G[0-2]+",colnames(f_data),value=T)
+  f_data_e = t(as.matrix(f_data[glycans]))
+  f_data_b = f_data[[name_of_batch_variable]]
+  f_data_m = model.matrix(~ 1,data = f_data)
+  combat_data = sva::ComBat(dat=f_data_e, batch=f_data_b,mod=f_data_m, 
+                            par.prior=TRUE, prior.plots=FALSE)
+  f_data[glycans] = t(combat_data)
+  return(f_data)
+}
+
+# Seto zero's to NA for batch correction and log transform
+D2 = Dat_Kor
+for(j in grep("G[0-2]+",colnames(D2))) D2[which(Dat_Kor[,j]==0),j] = NA
+D2[,grep("G[0-2]+",colnames(D2),value=T)] %<>% log
+D2 %<>% empirical_bayes_BC(name_of_batch_variable = "Plate")
+for(j in grep("G[0-2]+",colnames(D2))) D2[which(is.na(D2[,j])),j] = 0
+
+## Only consider IgG1
+IgGData <- rbind(D2[,1:31])
+IgGData <- IgGData[order(as.character(IgGData$ID)),]
+GeneData <- GeneData[order(row.names(GeneData)),]
+
+## Here the participants are matched
+rm_IIDs = which(!(row.names(GeneData) %in% IgGData$ID))
+rm_IDs = which(!(IgGData$ID %in% row.names(GeneData)))
+
+IgGData <- IgGData[-rm_IDs,]
+GeneData <- GeneData[-rm_IIDs,]
+
+## Remove age and sex trends
+IgGData[,12:31] <- as.tibble(
+  residuals(lm(
+    as.matrix(IgGData[,12:31])~IgGData$SEX+IgGData$AGE
+    ))
+  )
+```
+
+Now `IgGData` and `GeneData` have the same subjects in the same rows. Check that this is the case by using `all.equal` on the row IDs of both datasets. How many subjects are included in both datasets?
+
+```{r }
+dim(GeneData)
+dim(IgGData)
+all.equal(row.names(GeneData), as.character((IgGData$ID)))
+```
+
+```{r II:COMBAT and merging, warning=FALSE, message=FALSE, include=FALSE, eval=FALSE}
+# empirical_bayes_BC = function(f_data,name_of_batch_variable="batch") {
+#   glycans = grep("G[0-2]+",colnames(f_data),value=T)
+#   f_data_e = t(as.matrix(f_data[glycans]))
+#   f_data_b = f_data[[name_of_batch_variable]]
+#   f_data_m = model.matrix(~ 1,data = f_data)
+#   combat_data = sva::ComBat(dat=f_data_e, batch=f_data_b,mod=f_data_m, 
+#                             par.prior=TRUE, prior.plots=FALSE)
+#   f_data[glycans] = t(combat_data)
+#   return(f_data)
+# }
+# 
+# D2 = Dat_Kor
+# for(j in grep("G[0-2]+",colnames(D2))) D2[which(Dat_Kor[,j]==0),j] = NA
+# D2[,grep("G[0-2]+",colnames(D2),value=T)] %<>% log
+# D2 %<>% empirical_bayes_BC(name_of_batch_variable = "Plate")
+# for(j in grep("G[0-2]+",colnames(D2))) D2[which(is.na(D2[,j])),j] = 0
+# 
+# D3 = Dat_Vis
+# for(j in grep("G[0-2]+",colnames(D3))) D3[which(Dat_Vis[,j]==0),j] = NA
+# D3[,grep("G[0-2]+",colnames(D3),value=T)] %<>% log
+# D3 %<>% empirical_bayes_BC(name_of_batch_variable = "Plate")
+# for(j in grep("G[0-2]+",colnames(D3))) D3[which(is.na(D3[,j])),j] = 0
+# 
+# IgGData <- rbind(D3[,1:30]))
+# IgGData <- IgGData[order((IgGData$ID)),]
+# GeneData <- GeneData[order(row.names(GeneData)),]
+# 
+# rm_IIDs = which(!(row.names(GeneData) %in% as.character(IgGData$ID)))
+# rm_IDs = which(!(as.character(IgGData$ID) %in% row.names(GeneData)))
+# 
+# IgGData <- IgGData[-rm_IDs,]
+# GeneData <- GeneData[-rm_IIDs,]
+# IgGData <- within(IgGData, {AGE[is.na(AGE)] = mean(AGE, na.rm=T)})
+# IgGData[,11:30] <- residuals(lm(as.matrix(IgGData[,11:30])~IgGData[,2]+IgGData[,3]))
+```
+
+We now normalize the data. Here the `glycanr` package proves to be useful. First convert the data from wide to long format. Then apply your favorite normalization. Here we used Quantile Normalization.
+
+```{r}
+Dat <- gather(IgGData, glycan, value, contains("IgG"))
+Dat %<>% rename(gid=Sample.name)
+Dat$groups <- sapply(str_split(Dat$glycan, '_'), function(e) e[[1]])
+
+Dat <- glycanr::quantilenorm(Dat, grouping = TRUE, transpose = TRUE)
+Dat$groups <- NULL
+Dat <- spread(Dat, glycan, value)
+head(Dat)
+Dat %>% select(contains("IgG1")) %>% boxplot
+
+IgGData <- as.data.frame(Dat)
+IgGData <- IgGData[order(as.character(IgGData$ID)),]
+```
+
+
+## Descriptive summaries
+
+We have preprocessed the data to remove unwanted variation. However for O2PLS it is important to center the data to have zero mean. Also to make the scale of variation of each glycan comparable we use a technique called Quantile Normalization. Boxplots are excellent to visualise what's happening. First define `X` and `Y` to be the centered genetic and glycan data respectively. Only select the IgG1 glycans, and not the covariates. Investigate the distributions of the glycans with `boxplot`. Then apply Quantile Normalization (`normalize.quantiles`) and variance scaling (`scale`). Compare the boxplots of these data with the previous boxplots. Now that the columns of `Y` have been made comparable, deliver the finishing touch by assigning to it the proper row and column names. Use the `dimnames` command.
+
+```{r Scaling}
+X = scale(GeneData, scale=F)
+Y = scale(as.matrix(IgGData[,-(1:11)]), scale=T)
+boxplot(Y)
+
+## add col- and rownames to Y
+dimnames(Y) <- list(IgGData$ID, substr(names(IgGData[,-(1:11)]),6,99))
+```
+
+
+# OmicsPLS analysis
+
+## Determine number of components
+
+When working with O2PLS models it is required to specify the number of joint and specific components. We would like to let the data decide how many components are needed. To do this we consider two distinct approaches. The first approach considers proportion of explained variation by computing subsequent eigenvalues and requires the user to determine a cut-off. The second approach is called cross-validation and minimizes the prediction error. This approach is implemented in the OmicsPLS package.
+
+First use `svd` on $XX^\top$ and $Y^\top Y$ to compute the eigenvalues. Then plot the relative proportion of each eigenvalue. This indicates how many joint+specific components are needed for each dataset. Also plot the eigenvalues of $X^\top Y$ to get an estimate of how many joint components are needed.
+
+```{r}
+plot(svd(tcrossprod(X),nu=0,nv=0)$d[1:20] %>% (function(e) e/sum(e)))
+plot(svd(crossprod(Y),nu=0,nv=0)$d[1:10] %>% (function(e) e/sum(e)))
+plot(svd(crossprod(X,Y),nu=0,nv=0)$d %>% (function(e) e/sum(e)))
+```
+
+From the plots it can be seen that 5 joint, 5 genetic-specific and 0 glycan-specific components are reasonable to explain a good share of variation without losing too much information.
+
+The second cross-validation (CV) approach is implemented in `crossval_o2m` in OmicsPLS. The standard CV computes an O2PLS model for several folds on each grid point in a three dimensional grid defined by the potential numbers of components. As the number of grid points grow, this becomes a computational challenge. Therefore a faster alternative CV method is implemented in `crossval_o2m_adjR2`. This approach maximizes the correlation of the joint part to determine the number specific components instead of minimizing the prediction error. To make sure the results can be replicated set a seed with `set.seed` and perform a CV using the alternative approach. Consider 1, 2 and 3 joint component, 0, 1 and 10 genetic-specific components and 0, 1, and 5 glycan-specific components. Select two folds but use just one core. A parallel approach is very memory-intensive on Windows as the genetic PC dataset has to be copied to each parallel worker.
+
+```{r CV1, cache=TRUE, message=TRUE}
+set.seed(175427L)
+CV1 = crossval_o2m_adjR2(X, Y, 1:3, c(0,1,10), c(0,1,5), 
+                         nr_folds = 2, nr_cores = 1)
+CV1
+```
+
+It indicates that we need 1 joint, no genetic-specific and 5 glycan-specific components.
+Repeat the CV with a full approach and 10 folds to determine the best number of joint components given no genetic-specific and 5 glycan-specific components.
+
+```{r CV2, cache=TRUE, message=TRUE}
+set.seed(51638365L)
+CV2=crossval_o2m(X, Y, 1:3, 0, 5, 
+                 nr_folds = 10, nr_cores = 1)
+CV2
+```
+
+We get one joint component as best solution from a prediction point of view. Earlier we saw from an explained variation point of view something like 5 joint and 5 genetic-specific components were optimal for these data.
+We stick to the explained variation point of view and select 5 joint and 5 genetic-specific components.
+
+## Fitting
+
+Now we finally arrived at performing an actual O2PLS fit. Fit an O2PLS model to the data using the obtained number of components. Set the `stripped` argument to be `TRUE`.
+Then print the fit object and obtain a summary of the modeled variation. How long did it take to fit the O2PLS model? What proportion of the genetic data is modeled by its joint part with glycans? Did you expect this?
+What proportion of variation in the glycan data is explained by the genetic data? From a biological point of view. Did you expect this? Ask around what this proportion is currently known to be from literature.
+
+```{r Fitting}
+fit = o2m(X, Y, 5, 5, 0, stripped=TRUE)
+fit
+summary(fit)
+```
+
+
+## Plotting
+
+An important aspect of applied statistics is visualisation to understand relationships present in the data. For O2PLS an important concept is loadings. These indicate importance of each variable for each component. The loadings can be plotted with the `plot` command. Plot the first against the second loading vectors for both joint parts. Are there spikes or clusters of variables visible?
+
+```{r plot loadings}
+grid.arrange(
+  plot(fit, 'Xj', i=1, j=2, label = 'c'),
+  plot(fit, 'Yj', i=1, j=2, label = 'c'),
+  plot(fit, 'Xj', i=2, j=3, label = 'c'),
+  plot(fit, 'Yj', i=2, j=3, label = 'c')
+)
+```
+
+An alternative way to summarize the modeled (co)variation is to plot heatmaps of the correlation matrix of the data. We only consider the glycan data, as the genetic data has too many variables. Use the defined `hm.2` function to plot heatmaps of the observed correlation, as well as modeled correlation. Also inspect modelled correlation matrices per component. These plots show how observed correlation can be decomposed into several types of correlation.
+
+```{r}
+hm.2 <- function(obj){
+try(
+heatmap.2(obj,Rowv=F,symm=T,col=colorRampPalette(c("blue","white","red"))(25),
+dendrogram='none',trace='none',symkey=TRUE,breaks=seq(-1,1,length=26),
+key = T),
+silent = TRUE)
+}
+
+hm.2(cor(Y))
+modeled_cor <- cor(fit$U[,1:5] %*% t(fit$C.[,1:5]))
+hm.2(modeled_cor)
+
+```
+
+## Functional analysis
+
+In the previous plots we saw several patterns of genes and glycans. We will try to understand which types of genes and glycans drive these patterns. Also we will evaluate whether results with univariate methods can be recovered or whether the multivariate approach is complementary to the univariate analyses. 
+The `refGENES` object contains genes that were found to be of importance to glycan variation. We use the `select` function to convert the gene abbreviations to the corresponding Entrez gene IDs. Also we use the piping function `%>%` to increase readability of the code.
+
+```{r First component}
+refGENES <- c("ST6GAL1", "B4GALT1", "FUT8", "MGAT3", "IKZF1", "IL6ST",
+              "ANKRD55", "ABCF2", "SMARCD3", "SUV420H1", "SMARCB1", 
+              "DERL3") %>% 
+ AnnotationDbi::select(org.Hs.eg.db, ., keytype="SYMBOL", colum=c("ENTREZID")) %>%
+ subset(select = 2)
+refGENES = refGENES$ENTREZID
+```
+
+The most important variables are those with highest absolute loading values. Define `orderLoadings` containing this order of genes per component.
+
+```{r}
+r = ncol(fit$W.)
+p = nrow(fit$W.)
+q = nrow(fit$C.)
+orderLoadings = sapply(1:r, function(i) {
+  with(fit, W.[,i]) %>% raise_to_power(2) %>%
+    order(decreasing=T)
+})
+
+```
+
+First obtain for each reference gene its corresponding (best) loading value and its position in the ordering. Make a `data.frame` object with gene symbol, loading value and position as columns for each reference gene. Do this for each component. If you use `lapply` you will get a list of `data.frames`. This list can be `Reduce`d and merged to a more fancy `data.frame`.
+
+```{r second component}
+DF_ref = lapply(1:ncol(fit$W.), function(r_i) {
+  # Remove the _* in the geneID_* names
+  refPos = row.names(fit$W.)[orderLoadings[,r_i]]%>% str_split('_') %>% 
+    sapply(function(e) e[1]) 
+  # Find the position of the refGENES in the current component
+  uniqueRefPos = sapply(intersect(refPos,refGENES),
+                        function(e) which(refPos %in% intersect(refPos, e))[1])
+  # Define data.frame with Symbol, loading Value and Position in ordering
+  DF_ref = data.frame(
+    Symbol = refPos %>% intersect(refGENES) %>% 
+      AnnotationDbi::select(org.Hs.eg.db, ., keytype="ENTREZID", colum=c("SYMBOL")) %>%
+      subset(select = 2), 
+    Val = fit$W.[order(fit$W.[,r_i]^2, decreasing=T),r_i][uniqueRefPos], 
+    Pos = uniqueRefPos)
+  names(DF_ref)[2:3] = paste0(names(DF_ref)[2:3],r_i)
+  return(DF_ref)
+})
+# Merge each data.frame 
+Reduce(merge, DF_ref) %>% print
+```
+
+We've investigated the position of the reference genes. Now we would like to know whether there are interesting top genes and with which glycans they correlate. To do this we will plot loading values for the glycans and build `data.frame`s for the genes. As we will see in a moment, the glycans tend to cluster in a specific way. To visualise this we plot and cluster the loading values using `hclust`. The `plot_clust` function is defined to do this.
+
+```{r}
+plot_clust <- function(fit, ii, jj=NULL, nr_clust=NULL, cut_height = 0.2, ...){
+  plot(fit, "Yj", i=ii, j=jj, label='c',
+       col=cutree(hclust(dist(fit$C.[,c(ii,jj)]), method='average'), 
+                  k=nr_clust, h = cut_height), ...)
+}
+```
+
+Now for each component do the following: First calculate the proportion of explained variation of the top ten genes within this component. Then create a `data.frame` with gene ID or gene symbol and loading value as columns for these ten genes. 
+The `goana` function from the `limma` package provides easy access to Gene Ontology annotation and clustering. Use this function together with `topGO` to get the top 20 GO terms for the tep genes. Lastly use `plot_clust` to plot and cluster the loading values for the glycans in each component. 
+
+The most important question can now be answered: which types of genes and glycans correlate / are in the joint part? Can you give the glycan components a name reflecting the clusters you obtained? Can you give an explanation for these findings? Look up annotation of some of the genes, is there a link with IgG glycosylation?
+
+```{r}
+for(r_i in 1:ncol(fit$W.)){
+  cat("Explained Variation within component", r_i," :", 
+        sum(fit$W.[orderLoadings[1:10,r_i],r_i]^2),'\n')
+  DF_X = data.frame(
+      ID=row.names(fit$W.)[orderLoadings[1:10,r_i]] %>% str_split('_') %>% sapply(function(e) e[1]), 
+      Val=fit$W.[orderLoadings[1:10,r_i],r_i])
+    DF_X = cbind(
+      Symbol = DF_X$ID %>% as.character %>% 
+        AnnotationDbi::select(org.Hs.eg.db, ., keytype="ENTREZID", colum=c("SYMBOL")) %>% subset(select=2), 
+      DF_X)
+    print(DF_X);
+  
+  row.names(fit$W.)[orderLoadings[1:10,r_i]] %>%
+    str_split('_') %>% sapply(function(e) e[1]) %>%
+    (limma::goana) %>% (limma::topGO) %>% subset(select=1:2) %>% print
+    
+  print(plot_clust(fit, r_i, NULL, NULL, 0.25))
+}
+
+```
+
+
