@@ -83,7 +83,7 @@ D2 %<>% empirical_bayes_BC(name_of_batch_variable = "Plate")
 for(j in grep("G[0-2]+",colnames(D2))) D2[which(is.na(D2[,j])),j] = 0
 
 ## Only consider IgG1
-IgGData <- rbind(D2[,1:31])
+IgGData <- D2 %>% select(-contains("IgG4"), -contains("IgG2"))
 IgGData <- IgGData[order(as.character(IgGData$ID)),]
 GeneData <- GeneData[order(row.names(GeneData)),]
 
@@ -95,9 +95,9 @@ IgGData <- IgGData[-rm_IDs,]
 GeneData <- GeneData[-rm_IIDs,]
 
 ## Remove age and sex trends
-IgGData[,12:31] <- as.tibble(
+IgGData[,str_which(names(IgGData), "IgG1")] <- as.tibble(
   residuals(lm(
-    as.matrix(IgGData[,12:31])~IgGData$SEX+IgGData$AGE
+    as.matrix(IgGData[,str_which(names(IgGData), "IgG1")])~IgGData$SEX+IgGData$AGE
     ))
   )
 ```
@@ -154,7 +154,7 @@ Dat <- gather(IgGData, glycan, value, contains("IgG"))
 Dat %<>% rename(gid=Sample.name)
 Dat$groups <- sapply(str_split(Dat$glycan, '_'), function(e) e[[1]])
 
-Dat <- glycanr::quantilenorm(Dat, grouping = TRUE, transpose = TRUE)
+Dat <- glycanr::quantilenorm(Dat, grouping = TRUE, transpose=TRUE)
 Dat$groups <- NULL
 Dat <- spread(Dat, glycan, value)
 head(Dat)
@@ -221,7 +221,7 @@ We stick to the explained variation point of view and select 5 joint and 5 genet
 
 Now we finally arrived at performing an actual O2PLS fit. Fit an O2PLS model to the data using the obtained number of components. Set the `stripped` argument to be `TRUE`.
 Then print the fit object and obtain a summary of the modeled variation. How long did it take to fit the O2PLS model? What proportion of the genetic data is modeled by its joint part with glycans? Did you expect this?
-What proportion of variation in the glycan data is explained by the genetic data? From a biological point of view. Did you expect this? Ask around what this proportion is currently known to be from literature.
+What proportion of variation in the glycan data is explained by the genetic data? Did you expect this? Ask around what this proportion is currently known to be from literature.
 
 ```{r Fitting}
 fit = o2m(X, Y, 5, 5, 0, stripped=TRUE)
@@ -348,4 +348,23 @@ for(r_i in 1:ncol(fit$W.)){
 
 ```
 
+```{r}
+fit
+par(mfrow=c(2,2))
+invisible(sapply(1:4, function(i) hist(fit$U[,i])))
+par(mfrow=c(1,1))
+```
 
+```{r}
+hist(fit$U[,1])
+
+summary(lm(fit$U[,1] ~ IgGData$AGE))
+
+(sapply(3:11, function(ii) sapply(1:4,
+  function(i) coef(summary(lm(fit$U[,i] ~ IgGData[,ii])))[2,4])
+))
+
+ggplot(data = data.frame(y=fit$U[,3], x=IgGData$BMI), aes(x=x,y=y)) + geom_point() + geom_smooth(method="lm")
+
+
+```
